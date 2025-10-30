@@ -1,0 +1,25 @@
+data:
+  raw_data_path: "data/raw"
+  processed_path: "data/processed"
+  external_data_path: "data/external"
+
+model:
+  target: "pm25"
+  features:
+    - "temperature"
+    - "humidity"
+    - "wind_speed"
+    - "hour"
+    - "day_of_week"
+    - "month"
+  test_size: 0.2
+  val_size: 0.2
+
+api:
+  openmeteo:
+    base_url: "https://api.open-meteo.com/v1"
+    air_quality_endpoint: "/air-quality"
+    weather_endpoint: "/forecast"
+    default_location:
+      latitude: 27.7136  # Sukkur, Pakistan
+      longitude: 68.8489
