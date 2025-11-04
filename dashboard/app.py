@@ -11,6 +11,12 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from utils.feature_store import load_features
 from utils.model_loader import AQIPredictor
+
+# SHAP imports
+import shap
+import numpy as np
+import matplotlib.pyplot as plt
+
 # Page config
 st.set_page_config(
     page_title="AQI Forecast Dashboard",
@@ -106,6 +112,43 @@ try:
             title='Top 10 Most Important Features'
         )
         st.plotly_chart(fig, use_container_width=True)
+
+    # SHAP explainability
+    with st.expander("🔬 SHAP Explainability", expanded=False):
+        try:
+            # Derive features matrix exactly as used by the model
+            if hasattr(predictor.model, 'feature_names_in_'):
+                feature_cols = list(predictor.model.feature_names_in_)
+                # Ensure all required features exist
+                missing = [c for c in feature_cols if c not in features_df.columns]
+                if missing:
+                    st.warning(f"Missing features for SHAP: {missing}")
+                    X_all = features_df[[c for c in feature_cols if c in features_df.columns]].select_dtypes(include=[np.number])
+                else:
+                    X_all = features_df[feature_cols].select_dtypes(include=[np.number])
+            else:
+                X_all = features_df.select_dtypes(include=[np.number])
+                for c in ["aqi", "pm25", "pm_25", "target", "timestamp", "date"]:
+                    if c in X_all.columns:
+                        X_all = X_all.drop(columns=[c])
+            
+            # Sample to keep computation light (max 200 rows)
+            sample_size = min(200, len(X_all))
+            if sample_size >= 2:
+                X_sample = X_all.iloc[:sample_size].fillna(X_all.median(numeric_only=True))
+                explainer = shap.TreeExplainer(predictor.model)
+                shap_values = explainer.shap_values(X_sample)
+                # Plot summary
+                plt.figure(figsize=(10, 6))
+                shap.summary_plot(shap_values, X_sample, show=False)
+                st.pyplot(plt.gcf(), clear_figure=True, use_container_width=True)
+                st.caption(f"SHAP values computed for {len(X_sample)} samples. Features shown in order of importance.")
+            else:
+                st.info("Not enough rows to compute SHAP values. Expand the date range.")
+        except Exception as e:
+            st.warning(f"SHAP could not be computed: {str(e)}")
+            import traceback
+            st.code(traceback.format_exc())
     
     # Raw data
     if st.checkbox("Show Raw Data"):

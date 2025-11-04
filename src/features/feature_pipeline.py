@@ -1,3 +1,4 @@
+# pyright: reportMissingImports=false
 import json, glob, os
 import pandas as pd
 from datetime import datetime
@@ -7,8 +8,10 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parents[2]
 RAW_DIR = BASE_DIR / "data" / "raw"
 OUT_CSV = BASE_DIR / "data" / "processed" / "processed_features.csv"
+AQICN_CLEAN = BASE_DIR / "data" / "processed" / "aqicn_clean.csv"
 
 print(f"\n🔍 Using RAW_DIR: {RAW_DIR}")
+
 print(f"📂 Files found in RAW_DIR: {[p.name for p in RAW_DIR.glob('*')]}")
 
 # --- AQI from PM2.5 helper (US EPA breakpoints) ---
@@ -97,6 +100,15 @@ def load_openmeteo_air_quality():
 	merged = merged.sort_values('timestamp').drop_duplicates('timestamp')
 	return merged
 
+# --- Load cleaned AQICN history if available ---
+def load_aqicn_clean():
+	if AQICN_CLEAN.exists():
+		df = pd.read_csv(AQICN_CLEAN)
+		df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True, errors='coerce')
+		df = df.dropna(subset=['timestamp', 'aqi'])
+		return df.sort_values('timestamp').drop_duplicates('timestamp')
+	return None
+
 # --- Feature engineering: time, lag, rolling stats ---
 def create_time_and_lag_features(df):
 	df = df.copy()
@@ -123,64 +135,97 @@ def create_time_and_lag_features(df):
 
 # --- Build pipeline ---
 def build_features():
-	# AQICN + OpenWeather
+	# Option A: Prefer cleaned AQICN + covariates (Open‑Meteo; optionally OpenWeather)
+	aqicn_hist = load_aqicn_clean()
+	if aqicn_hist is not None:
+		print(f"📊 Loaded AQICN history: {len(aqicn_hist)} rows")
+	covariates = None
+
+	# Build covariates from Open‑Meteo
+	df_om = load_openmeteo_air_quality()
+	if df_om is not None and not df_om.empty:
+		covariates = df_om.copy()
+		print(f"🌦️ Loaded Open-Meteo covariates: {len(covariates)} rows")
+	else:
+		print("⚠️ No Open-Meteo covariates found. Using AQICN history only.")
+
+	# Optionally enrich covariates with OpenWeather
 	aq_files = sorted(glob.glob(str(RAW_DIR / "aqicn_*.json")))
 	ow_files = sorted(glob.glob(str(RAW_DIR / "openweather_*.json")))
-
 	print(f"📊 Found {len(aq_files)} AQICN files")
 	print(f"🌦️  Found {len(ow_files)} OpenWeather files")
 
-	df_list = []
-
-	if aq_files and ow_files:
-		# --- AQICN ---
-		rows = [parse_aqicn_file(f) for f in aq_files if parse_aqicn_file(f)]
-		df_aq = pd.DataFrame(rows)
-		df_aq['timestamp'] = pd.to_datetime(df_aq['timestamp'])
-		df_aq = df_aq.sort_values('timestamp').drop_duplicates('timestamp')
-
-		# --- OpenWeather ---
+	if ow_files and covariates is not None:
 		rows = [parse_openweather_file(f) for f in ow_files if parse_openweather_file(f)]
 		df_ow = pd.DataFrame(rows)
 		df_ow['timestamp'] = pd.to_datetime(df_ow['timestamp'])
 		df_ow = df_ow.sort_values('timestamp').drop_duplicates('timestamp')
-
-		# --- Merge with up to 3-hour tolerance ---
-		df_main = pd.merge_asof(
-			df_aq.sort_values('timestamp'),
+		covariates = pd.merge_asof(
+			covariates.sort_values('timestamp'),
 			df_ow.sort_values('timestamp'),
 			on='timestamp',
 			tolerance=pd.Timedelta('3h'),
 			direction='nearest'
 		)
-		if not df_main.empty:
-			df_list.append(df_main)
 
-	# Open-Meteo backfill
-	df_om = load_openmeteo_air_quality()
-	if df_om is not None and not df_om.empty:
-		print(f"🕘 Added Open-Meteo backfill rows: {len(df_om)}")
-		df_list.append(df_om)
-
-	if not df_list:
-		print("⚠️ No data found to build features!")
-		return
-
-	# Union and engineer features
-	df = pd.concat(df_list, axis=0, ignore_index=True)
-	df = df.sort_values('timestamp').drop_duplicates('timestamp')
-
-	# Ensure 'aqi' exists (last resort from pm2_5-like columns)
-	if 'aqi' not in df.columns:
-		pm_like = None
-		for c in ['air_quality_pm2_5', 'pm2_5', 'pm25']:
-			if c in df.columns:
-				pm_like = c
-				break
-		if pm_like:
-			df['aqi'] = df[pm_like].apply(pm25_to_aqi)
+	if aqicn_hist is not None:
+		if covariates is not None:
+			# Align by nearest hour to combine true AQI with covariates
+			df = pd.merge_asof(
+				aqicn_hist.sort_values('timestamp'),
+				covariates.sort_values('timestamp'),
+				on='timestamp',
+				tolerance=pd.Timedelta('1h'),
+				direction='nearest'
+			)
+			# Ensure we have AQI as target
+			if 'aqi' not in df.columns:
+				raise ValueError("AQICN history loaded but 'aqi' column missing after merge.")
 		else:
-			raise ValueError("Could not determine target 'aqi' from available data.")
+			# Use AQICN history alone (minimal features)
+			df = aqicn_hist.copy()
+			print("ℹ️ Using AQICN history without weather covariates.")
+	else:
+		# Fallback: use previous logic combining AQICN nowcast + OpenWeather + Open‑Meteo with proxy
+		df_list = []
+		if aq_files and ow_files:
+			rows = [parse_aqicn_file(f) for f in aq_files if parse_aqicn_file(f)]
+			df_aq = pd.DataFrame(rows)
+			df_aq['timestamp'] = pd.to_datetime(df_aq['timestamp'])
+			df_aq = df_aq.sort_values('timestamp').drop_duplicates('timestamp')
+
+			rows = [parse_openweather_file(f) for f in ow_files if parse_openweather_file(f)]
+			df_ow = pd.DataFrame(rows)
+			df_ow['timestamp'] = pd.to_datetime(df_ow['timestamp'])
+			df_ow = df_ow.sort_values('timestamp').drop_duplicates('timestamp')
+
+			df_main = pd.merge_asof(
+				df_aq.sort_values('timestamp'),
+				df_ow.sort_values('timestamp'),
+				on='timestamp',
+				tolerance=pd.Timedelta('3h'),
+				direction='nearest'
+			)
+			if not df_main.empty:
+				df_list.append(df_main)
+		if df_om is not None and not df_om.empty:
+			print(f"🕘 Added Open-Meteo backfill rows: {len(df_om)}")
+			df_list.append(df_om)
+		if not df_list:
+			print("⚠️ No data found to build features!")
+			return
+		df = pd.concat(df_list, axis=0, ignore_index=True)
+		df = df.sort_values('timestamp').drop_duplicates('timestamp')
+		if 'aqi' not in df.columns:
+			pm_like = None
+			for c in ['air_quality_pm2_5', 'pm2_5', 'pm25']:
+				if c in df.columns:
+					pm_like = c
+					break
+			if pm_like:
+				df['aqi'] = df[pm_like].apply(pm25_to_aqi)
+			else:
+				raise ValueError("Could not determine target 'aqi' from available data.")
 
 	# Add time-based and lag features
 	df = create_time_and_lag_features(df)

@@ -11,60 +11,51 @@ pip install -r requirements.txt
 pip install -r dashboard/requirements.txt
 ```
 
-2) Configure environment variables in a `.env` file at repo root:
+2) Optional: Configure `.env` for live APIs
 
 ```ini
-# AQICN (optional if you only use Open-Meteo)
 AQICN_TOKEN=YOUR_AQICN_TOKEN
-
-# OpenWeather (optional; used by src/ingestion/fetch_openweather.py)
 OPENWEATHER_API_KEY=YOUR_OPENWEATHER_KEY
 ```
 
-3) Collect raw data (examples):
-
-- AQICN nowcast by geo:
+3) Get data
+- Backfill via Open-Meteo (no key):
+```bash
+python data/raw/open_meteo.py
+```
+- (Optional) Live nowcast samples:
 ```bash
 python -m src.ingestion.fetch_aqicn
-```
-- OpenWeather current:
-```bash
 python -m src.ingestion.fetch_openweather
 ```
-- Open-Meteo hourly (weather only):
-```bash
-python data/raw/weather_data.py
-```
 
-4) Build processed features:
+4) Use REAL AQI from AQICN (history CSVs)
+- Export hourly AQI CSVs from the AQICN Data Platform for your location.
+- Place files under: `data/raw/aqicn_history/`
+- Build cleaned AQICN:
+```bash
+python -m src.ingestion.aqicn_history_loader
+```
+- Build features (prefers AQICN history for target):
 ```bash
 python -m src.features.feature_pipeline
 ```
-This writes `data/processed/processed_features.csv`.
-
-5) Train a baseline model:
+- Train with time-based split:
 ```bash
-python scripts/train_model.py
+python scripts/train_model_time_split.py
 ```
-This writes `models/model.joblib` and `models/metadata.json`.
 
-6) Run the dashboard:
+5) Run the dashboard
 ```bash
 python dashboard/run_dashboard.py
 ```
 Open http://localhost:8501
 
 ## Project Structure
-
-- `src/ingestion/`: API scripts (AQICN, OpenWeather)
-- `src/features/feature_pipeline.py`: Joins raw JSONs, engineers features, saves CSV
-- `scripts/train_model.py`: Trains RandomForest on processed features
+- `src/ingestion/aqicn_history_loader.py`: Clean & consolidate AQICN history CSVs → `data/processed/aqicn_clean.csv`
+- `src/features/feature_pipeline.py`: Prefers true AQI from `aqicn_clean.csv`, merges covariates, engineers features
+- `scripts/train_model_time_split.py`: Chronological split training & evaluation
 - `dashboard/`: Streamlit app and utils
-- `data/raw/`: Raw JSON/CSV files
-- `data/processed/processed_features.csv`: Engineered features
-- `models/`: Saved model artifacts
 
 ## Notes
-- The dashboard expects processed features and a trained model. Run steps 4–5 first.
-- You can extend training to XGBoost/LightGBM, and add SHAP explanations.
-- For automation (hourly/daily runs), wire these scripts into Airflow or GitHub Actions.
+- For Streamlit Cloud, include `data/processed/processed_features.csv` and `models/` artifacts in the repo, or implement a startup fetch/build flow.
