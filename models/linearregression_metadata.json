@@ -1,0 +1,36 @@
+{
+  "model_name": "LinearRegression",
+  "feature_names": [
+    "aqi_lag_1",
+    "aqi_lag_2",
+    "aqi_lag_3",
+    "aqi_lag_4",
+    "aqi_lag_5",
+    "aqi_lag_6",
+    "aqi_lag_7",
+    "aqi_roll_mean_3",
+    "aqi_roll_std_3",
+    "aqi_roll_mean_7",
+    "aqi_roll_std_7",
+    "aqi_diff_1",
+    "aqi_diff_7",
+    "day_of_week",
+    "month",
+    "day_of_year",
+    "is_weekend",
+    "day_of_year_sin",
+    "day_of_year_cos"
+  ],
+  "metrics": {
+    "model_name": "LinearRegression",
+    "train_rmse": 14.606289662462142,
+    "test_rmse": 29.83399000180775,
+    "train_mae": 11.479351115206613,
+    "test_mae": 25.326972310358833,
+    "train_r2": 0.6970407482642043,
+    "test_r2": -0.5173534607149688
+  },
+  "training_samples": 286,
+  "test_samples": 72,
+  "random_seed": 42
+}

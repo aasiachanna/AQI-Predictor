@@ -1,0 +1,15 @@
+data:
+  raw_dir: "data/raw"
+  processed_dir: "data/processed"
+  processed_features_file: "data/processed/processed_features.csv"
+  daily_history_file: "data/processed/daily_history.csv"
+
+model:
+  target: "aqi"
+  forecast_days: 3
+  random_seed: 42
+  test_fraction: 0.2
+  min_training_rows: 90
+  max_lag: 7
+  rolling_windows: [3, 7]
+  select_k_best: 10

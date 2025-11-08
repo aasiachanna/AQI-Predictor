@@ -1,0 +1,91 @@
+{
+  "best_model": "LightGBM_Fast",
+  "models": {
+    "Ridge_Fast": {
+      "model_name": "Ridge_Fast",
+      "train_rmse": 13.3236277561622,
+      "test_rmse": 11.308308870268553,
+      "train_mae": 10.203714193002384,
+      "test_mae": 9.004372190888976,
+      "train_r2": 0.7341540011336669,
+      "test_r2": 0.7057418327459666
+    },
+    "ElasticNet_Fast": {
+      "model_name": "ElasticNet_Fast",
+      "train_rmse": 13.929001890197691,
+      "test_rmse": 11.419578904231532,
+      "train_mae": 10.693117904281632,
+      "test_mae": 9.163715412956984,
+      "train_r2": 0.7094471486457512,
+      "test_r2": 0.699922536074717
+    },
+    "XGBoost_Fast": {
+      "model_name": "XGBoost_Fast",
+      "train_rmse": 0.2660447219601994,
+      "test_rmse": 10.537226489145906,
+      "train_mae": 0.17900814677875468,
+      "test_mae": 8.52369555258966,
+      "train_r2": 0.9998940027880977,
+      "test_r2": 0.7445029845251951
+    },
+    "LightGBM_Fast": {
+      "model_name": "LightGBM_Fast",
+      "train_rmse": 0.3284167638383259,
+      "test_rmse": 10.096783916743314,
+      "train_mae": 0.21771292105818504,
+      "test_mae": 8.307136450517529,
+      "train_r2": 0.9998384764757751,
+      "test_r2": 0.7654154933467415
+    },
+    "Ensemble_Fast": {
+      "model_name": "Ensemble_Fast",
+      "test_rmse": 10.128381859185863,
+      "test_mae": 8.2100590453858,
+      "test_r2": 0.7639449287877567
+    }
+  },
+  "feature_names": [
+    "aqi",
+    "pm10_mean",
+    "temperature_2m_mean",
+    "pressure_msl_mean",
+    "wind_speed_10m_mean",
+    "aqi_lag_1",
+    "aqi_lag_2",
+    "aqi_lag_3",
+    "aqi_lag_4",
+    "aqi_lag_5",
+    "aqi_lag_6",
+    "aqi_lag_7",
+    "aqi_roll_mean_3",
+    "aqi_roll_mean_7",
+    "aqi_diff_7",
+    "day_of_year_cos",
+    "temperature_2m_mean_lag_1",
+    "temperature_2m_mean_lag_2",
+    "temperature_2m_mean_lag_3",
+    "temperature_2m_mean_roll_mean_3",
+    "temperature_2m_mean_current",
+    "pressure_msl_mean_lag_1",
+    "pressure_msl_mean_lag_2",
+    "pressure_msl_mean_lag_3",
+    "pressure_msl_mean_roll_mean_3",
+    "pressure_msl_mean_current",
+    "wind_speed_10m_mean_lag_1",
+    "wind_speed_10m_mean_lag_2",
+    "wind_speed_10m_mean_lag_3",
+    "wind_speed_10m_mean_roll_mean_3",
+    "wind_speed_10m_mean_current",
+    "pm10_mean_lag_1",
+    "pm10_mean_roll_mean_3",
+    "pm10_mean_current",
+    "aqi_x_aqi_lag_1",
+    "aqi_x_aqi_lag_2",
+    "aqi_lag_1_x_aqi_lag_2",
+    "aqi_lag_1_x_aqi_lag_3",
+    "aqi_lag_2_x_aqi_lag_3",
+    "aqi_lag_2_x_aqi_lag_4"
+  ],
+  "training_samples": 805,
+  "test_samples": 90
+}

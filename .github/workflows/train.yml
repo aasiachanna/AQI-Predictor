@@ -1,0 +1,344 @@
+name: Train AQI Models
+
+on:
+  # Trigger on push to main branch
+  push:
+    branches:
+      - main
+      - master
+  # Trigger on pull requests to main
+  pull_request:
+    branches:
+      - main
+      - master
+  # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      run_feature_pipeline:
+        description: 'Run feature pipeline'
+        required: false
+        default: 'true'
+        type: boolean
+      run_training:
+        description: 'Run model training'
+        required: false
+        default: 'true'
+        type: boolean
+      upload_to_hopsworks:
+        description: 'Upload features to Hopsworks'
+        required: false
+        default: 'false'
+        type: boolean
+      upload_to_vertex:
+        description: 'Upload to Vertex AI'
+        required: false
+        default: 'false'
+        type: boolean
+  # Schedule for daily training (optional)
+  schedule:
+    - cron: '0 2 * * *'  # Run at 2 AM UTC daily
+
+env:
+  PYTHON_VERSION: '3.10'
+  POETRY_VERSION: '1.7.0'
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r dashboard/requirements.txt || true
+
+      - name: Create necessary directories
+        run: |
+          mkdir -p data/raw
+          mkdir -p data/processed
+          mkdir -p models
+          mkdir -p data/external
+
+      - name: Check for required data files
+        id: check_data
+        run: |
+          if [ -f "data/processed/processed_features.csv" ]; then
+            echo "processed_features_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "processed_features_exists=false" >> $GITHUB_OUTPUT
+          fi
+          
+          # Check for raw data files
+          if ls data/raw/*.csv 1> /dev/null 2>&1 || ls data/raw/*.json 1> /dev/null 2>&1; then
+            echo "raw_data_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "raw_data_exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run AQICN history loader (if data exists)
+        if: steps.check_data.outputs.raw_data_exists == 'true'
+        run: |
+          python -m src.ingestion.aqicn_history_loader || echo "⚠️ AQICN loader failed or no data found"
+
+      - name: Run feature pipeline
+        id: feature_pipeline
+        if: |
+          (github.event_name == 'workflow_dispatch' && github.event.inputs.run_feature_pipeline == 'true') ||
+          (github.event_name != 'workflow_dispatch')
+        run: |
+          echo "🔧 Building features..."
+          python -m src.features.feature_pipeline
+          
+          if [ -f "data/processed/processed_features.csv" ]; then
+            echo "✅ Feature pipeline completed successfully"
+            echo "feature_count=$(wc -l < data/processed/processed_features.csv)" >> $GITHUB_OUTPUT
+            echo "success=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Feature pipeline failed - no output file found"
+            echo "success=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+      - name: Run model training
+        id: training
+        if: |
+          steps.feature_pipeline.outputs.success == 'true' &&
+          ((github.event_name == 'workflow_dispatch' && github.event.inputs.run_training == 'true') ||
+           (github.event_name != 'workflow_dispatch'))
+        run: |
+          echo "🚀 Training models..."
+          python scripts/train_models_comparison.py
+          
+          if [ -f "models/model_comparison.json" ]; then
+            echo "✅ Model training completed successfully"
+            echo "success=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Model training failed"
+            echo "success=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+      - name: Display model metrics
+        if: steps.training.outputs.success == 'true'
+        run: |
+          echo "📊 Model Comparison Results:"
+          cat models/model_comparison.json | python -m json.tool || echo "Could not display metrics"
+
+      - name: Upload model artifacts
+        if: steps.training.outputs.success == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: trained-models
+          path: |
+            models/*.joblib
+            models/*.json
+          retention-days: 30
+
+      - name: Upload feature artifacts
+        if: steps.feature_pipeline.outputs.success == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: processed-features
+          path: |
+            data/processed/*.csv
+          retention-days: 7
+
+      # Optional: Hopsworks Integration
+      - name: Upload to Hopsworks
+        if: |
+          steps.feature_pipeline.outputs.success == 'true' &&
+          ((github.event_name == 'workflow_dispatch' && github.event.inputs.upload_to_hopsworks == 'true') ||
+           (vars.HOPSWORKS_ENABLED == 'true'))
+        env:
+          HOPSWORKS_API_KEY: ${{ secrets.HOPSWORKS_API_KEY }}
+          HOPSWORKS_PROJECT_NAME: ${{ vars.HOPSWORKS_PROJECT_NAME || 'aqi-predictor' }}
+        run: |
+          echo "🔗 Uploading to Hopsworks..."
+          pip install hopsworks || echo "⚠️ Hopsworks not installed, skipping upload"
+          
+          python << EOF
+          try:
+              import hopsworks
+              import pandas as pd
+              from pathlib import Path
+              
+              # Initialize Hopsworks
+              project = hopsworks.login(
+                  api_key_value="${{ secrets.HOPSWORKS_API_KEY }}",
+                  project="${{ vars.HOPSWORKS_PROJECT_NAME || 'aqi-predictor' }}"
+              )
+              
+              # Get or create feature store
+              fs = project.get_feature_store()
+              
+              # Read processed features
+              df = pd.read_csv("data/processed/processed_features.csv")
+              
+              # Get or create feature group
+              try:
+                  fg = fs.get_feature_group(name="aqi_features", version=1)
+              except:
+                  fg = fs.create_feature_group(
+                      name="aqi_features",
+                      version=1,
+                      description="AQI prediction features",
+                      primary_key=["timestamp"],
+                      event_time="timestamp"
+                  )
+              
+              # Insert data
+              fg.insert(df)
+              print("✅ Successfully uploaded features to Hopsworks")
+          except Exception as e:
+              print(f"⚠️ Hopsworks upload failed: {e}")
+          EOF
+
+      # Optional: Vertex AI Integration
+      - name: Setup Google Cloud SDK
+        if: |
+          (github.event_name == 'workflow_dispatch' && github.event.inputs.upload_to_vertex == 'true') ||
+          (vars.VERTEX_AI_ENABLED == 'true')
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          service_account_key: ${{ secrets.GCP_SA_KEY }}
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Upload to Vertex AI
+        if: |
+          steps.feature_pipeline.outputs.success == 'true' &&
+          ((github.event_name == 'workflow_dispatch' && github.event.inputs.upload_to_vertex == 'true') ||
+           (vars.VERTEX_AI_ENABLED == 'true'))
+        env:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_LOCATION: ${{ vars.GCP_LOCATION || 'us-central1' }}
+          VERTEX_AI_DATASET_ID: ${{ vars.VERTEX_AI_DATASET_ID || 'aqi_features' }}
+        run: |
+          echo "🔗 Uploading to Vertex AI..."
+          pip install google-cloud-aiplatform google-cloud-storage || echo "⚠️ Vertex AI SDK not installed"
+          
+          python << EOF
+          try:
+              from google.cloud import aiplatform
+              from google.cloud import storage
+              import pandas as pd
+              from pathlib import Path
+              
+              # Initialize Vertex AI
+              aiplatform.init(
+                  project="${{ secrets.GCP_PROJECT_ID }}",
+                  location="${{ vars.GCP_LOCATION || 'us-central1' }}"
+              )
+              
+              # Upload features to Cloud Storage
+              storage_client = storage.Client()
+              bucket_name = "${{ vars.GCS_BUCKET_NAME || 'aqi-predictor-data' }}"
+              
+              try:
+                  bucket = storage_client.bucket(bucket_name)
+              except:
+                  bucket = storage_client.create_bucket(bucket_name)
+              
+              # Upload processed features
+              blob = bucket.blob("processed_features.csv")
+              blob.upload_from_filename("data/processed/processed_features.csv")
+              
+              print(f"✅ Successfully uploaded features to Vertex AI GCS: gs://{bucket_name}/processed_features.csv")
+              
+              # Optional: Create Vertex AI Dataset
+              # dataset = aiplatform.TabularDataset.create(
+              #     display_name="AQI Features",
+              #     gcs_source=f"gs://{bucket_name}/processed_features.csv"
+              # )
+              # print(f"✅ Created Vertex AI Dataset: {dataset.display_name}")
+              
+          except Exception as e:
+              print(f"⚠️ Vertex AI upload failed: {e}")
+          EOF
+
+      - name: Upload models to Vertex AI Model Registry
+        if: |
+          steps.training.outputs.success == 'true' &&
+          ((github.event_name == 'workflow_dispatch' && github.event.inputs.upload_to_vertex == 'true') ||
+           (vars.VERTEX_AI_ENABLED == 'true'))
+        env:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_LOCATION: ${{ vars.GCP_LOCATION || 'us-central1' }}
+        run: |
+          echo "📦 Uploading models to Vertex AI Model Registry..."
+          
+          python << EOF
+          try:
+              from google.cloud import aiplatform
+              from google.cloud import storage
+              import json
+              
+              # Initialize Vertex AI
+              aiplatform.init(
+                  project="${{ secrets.GCP_PROJECT_ID }}",
+                  location="${{ vars.GCP_LOCATION || 'us-central1' }}"
+              )
+              
+              # Upload models to GCS
+              storage_client = storage.Client()
+              bucket_name = "${{ vars.GCS_BUCKET_NAME || 'aqi-predictor-models' }}"
+              
+              try:
+                  bucket = storage_client.bucket(bucket_name)
+              except:
+                  bucket = storage_client.create_bucket(bucket_name)
+              
+              # Upload each model
+              import glob
+              for model_file in glob.glob("models/*_model.joblib"):
+                  model_name = Path(model_file).stem
+                  blob = bucket.blob(f"{model_name}.joblib")
+                  blob.upload_from_filename(model_file)
+                  print(f"✅ Uploaded {model_name} to gs://{bucket_name}/")
+              
+              # Upload comparison report
+              if Path("models/model_comparison.json").exists():
+                  blob = bucket.blob("model_comparison.json")
+                  blob.upload_from_filename("models/model_comparison.json")
+                  print("✅ Uploaded comparison report")
+              
+          except Exception as e:
+              print(f"⚠️ Vertex AI model upload failed: {e}")
+          EOF
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Training Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Feature Pipeline" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.feature_pipeline.outputs.success }}" == "true" ]; then
+            echo "✅ Feature pipeline completed successfully" >> $GITHUB_STEP_SUMMARY
+            echo "- Feature count: ${{ steps.feature_pipeline.outputs.feature_count }}" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Feature pipeline failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Model Training" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.training.outputs.success }}" == "true" ]; then
+            echo "✅ Model training completed successfully" >> $GITHUB_STEP_SUMMARY
+            echo "- Models saved: RandomForest, XGBoost, LightGBM" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Model training failed" >> $GITHUB_STEP_SUMMARY
+          fi
+
